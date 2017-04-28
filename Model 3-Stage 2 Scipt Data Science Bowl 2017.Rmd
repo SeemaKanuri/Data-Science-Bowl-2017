@@ -1,0 +1,313 @@
+---
+title: "Model 3 Stage 2 Scipt Data Science Bowl 2017"
+author: "Seema Rani Kanuri"
+date: "April 13, 2017"
+output: html_document
+---
+
+#Model : 3
+
+## Introduction : Data Science Bowl 2017
+We aspire to predict by Using a data set of thousands of high-resolution lung scans provided by the National Cancer Institute, participants will develop algorithms that accurately determine when lesions in the lungs are cancerous.
+
+### Goal:
+The Goal is to classify whether someone will be diagnosed with lung cancer at some point during the next year by using the  h2o.DeepLearning method
+
+### Task:
+We have to predict the lungs are cancerous.
+
+```{r setup, warning=F, results='hide'}
+set.seed(0) #  setting a seed will ensure reproducible results (not R's seed)
+rm(list=ls())
+gc()
+memory.size(max=T)')
+```
+
+## Introduction to the Data
+In this dataset, you are given over a thousand low-dose CT images from high-risk patients in DICOM format. Each image contains a series with multiple axial slices of the chest cavity. Each image has a variable number of 2D slices, which can vary based on the machine taking the scan and patient.
+
+The DICOM files have a header that contains the necessary information about the patient id, as well as scan parameters such as the slice thickness.
+
+### File descriptions:
+Each patient id has an associated directory of DICOM files. The patient id is found in the DICOM header and is identical to the patient name. The exact number of images will differ from case to case, varying according in the number of slices. Images were compressed as .7z files due to the large size of the dataset.
+
+```{r h2o-cluster, warning=F, echo=FALSE}
+
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite("BiocGenerics")
+
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite("EBImage")
+
+library(oro.dicom) 
+library(BiocGenerics) 
+library(EBImage)
+library("dplyr")
+library(reshape2)  #cbind
+library(stringr)  #do.call string
+library(data.table) #setname
+library(RPMG) #rescaling
+```
+
+###  The image data
+First, let's look at the sample images!
+Lets look at 25 rows:
+
+id are of patients
+cancer (label to predict)
+
+The input folder has three things, one is the `sample_images folders` which has the sample CT Scans. The `stage1_labels.csv` contains the cancer ground truth for the stage 1 training set images and `stage1_sample_submission.csv` shows the submission format for stage 1.
+
+
+###  Resizing the image data
+
+To visualise the slices, we will have to plot them. matplotlib is used for plotting the slices. The plot_ct_scan function takes a 3D CT Scanned Image array as input and plots equally spaced slices. The CT Scans are grayscale images i.e. the value of each pixel is a single sample, which means it carries only intensity information.
+
+```{r}
+
+Patient_1 <- read.csv("D:/Data/S/Patients_1.csv")
+Patient_2 <- read.csv("D:/Data/S/Patients_2.csv")
+Patient_3 <- read.csv("D:/Data/S/Patients_3.csv")
+Patient_4 <- read.csv("D:/Data/S/Patients_4.csv")
+
+PTOtest200 <- read.csv("D:/Data/S/PTOtest200.csv")
+PTOtest201 <- read.csv("D:/Data/S/PTOtest201.csv")
+
+stage1_labels <- read.csv("D:/Data/S/stage1_labels.csv")
+
+```
+
+
+
+```{r}
+Patient_1 <- subset( Patient_1, select = -X )
+Patient_2 <- subset( Patient_2, select = -X )
+Patient_3 <- subset( Patient_3, select = -X )
+Patient_4 <- subset( Patient_4, select = -X )
+
+PTOtest200 <- subset( PTOtest200, select = -X )
+PTOtest201 <- subset( PTOtest201, select = -X )
+
+Table_Df <- merge(Patient_1, Patient_2, all = TRUE)
+ToTrain_df<- merge(Table_Df, Patient_3, all = TRUE)
+AllTrain_df <- merge(ToTrain_df, Patient_4, all = TRUE)
+ToTest_df <- merge(PTOtest200, PTOtest201, all = TRUE)
+train.data <- subset( train.data, select = -X )
+
+rm(Patient_1)
+rm(Patient_2)
+rm(Patient_3)
+rm(Patient_4)
+rm(Table_Df)
+rm(ToTrain_df)
+rm(PTOtest201)
+rm(PTOtest200)
+
+```
+
+
+
+```{r}
+setnames(ToTest_df, "PatientID", "id")
+setnames(AllTrain_df, "PatientID", "id")
+
+setwd("D:\\Data\\S")
+df1 <- merge(stage1_labels, AllTrain_df, by = "id", all.y = TRUE)
+
+sum(is.na(df1$cancer))
+sum(is.na(df1$SliceLocation))
+sum(is.na(ToTest_df$SliceLocation))
+sum(is.na(ToTest_df$id))
+sum(is.na(ToTest_df$image_id))
+
+df1[df1== "-2000"]<- 0
+ToTest_df[ToTest_df== "-2000"]<- 0
+
+```
+
+#
+#Working on the missing values of slice Location in the Test data 
+
+```{r}
+No_Slice_Loc <- subset(ToTest_df, is.na(ToTest_df$SliceLocation))
+Slice_Loc <- subset(ToTest_df, !is.na(ToTest_df$SliceLocation))
+
+No_Slice_Loc_test.data <- subset(No_Slice_Loc, select = -c(id,image_id,SliceLocation))
+Slice_Loc_train.data <- subset(Slice_Loc, select = -c(id,image_id))
+
+```
+
+## Setting Up and Connecting to a H2O Cluster
+
+Let’s first load some packages
+
+```{r}
+# H2O is an R package
+library(h2o)
+
+# Create an H2O cloud 
+h20package<-h2o.init(
+  nthreads=-1,            #use available threads
+  max_mem_size = "16G")   # specify the memory size for the H2O cloud
+
+h2o.removeAll() ## clean slate - just in case the cluster was already running
+
+```
+
+
+
+## Run our predictive model, Training a h2o Deep Learning Model
+## Deep learning algorithm in h2o for prediction
+
+```{r}
+train_h2o <- as.h2o(Slice_Loc_train.data)
+test_h2o  <- as.h2o(No_Slice_Loc_test.data)
+timer <- proc.time()
+
+system.time(
+  dlearning.model <- h2o.deeplearning(                                     # data in H2O format
+                                      x=2:(ncol(train_h2o)-1), 
+                                      y=1, 
+                                      activation = "RectifierWithDropout",  
+                                      input_dropout_ratio = 0.2, # % of inputs dropout
+                                      hidden_dropout_ratios = c(0.5,0.5,0.5), # % for nodes dropout
+                                      training_frame=train_h2o, 
+                                      nfolds=10,
+                                      #validation_frame=valid_index.hex,
+                                      epochs=500, 
+                                      hidden=c(128,128,128),       ## more hidden layers -> more complex interactions
+                                      stopping_tolerance=1e-2,        ## stop when validation logloss does not improve by >=1% for 2 scoring events
+                                      stopping_rounds=2,
+                                      score_validation_samples=10000, ## downsample validation set for faster scoring
+                                      score_duty_cycle=0.025,         ## don't score more than 2.5% of the wall time
+                                      adaptive_rate=F,                ## manually tuned learning rate
+                                      rate=0.01, 
+                                      rate_annealing=2e-6,            
+                                      momentum_start=0.2,             # #manually tuned momentum
+                                      momentum_stable=0.4, 
+                                      momentum_ramp=1e7, 
+                                      l1=1e-5,                        ## add some L1/L2 regularization
+                                      l2=1e-5,
+                                      max_w2=10                       ## helps stability for Rectifier
+  )
+)
+
+```
+
+
+```{r}
+pred_value <- predict(dlearning.model, test_h2o)
+pred_value_df= as.data.frame(pred_value)
+No_Slice_Loc$SliceLocation <- pred_value_df$predict
+
+ToTest_df1 <- rbind(No_Slice_Loc,Slice_Loc)
+sum(is.na(ToTest_df1$SliceLocation))
+sum(is.na(ToTest_df1$id))
+sum(is.na(ToTest_df1$image_id))
+
+```
+
+
+```{r}
+
+#rm(dlearning.model)
+#rm(test_h2o)
+rm(train_h2o)
+rm(Slice_Loc_train.data)
+rm(No_Slice_Loc_test.data)
+rm(Slice_Loc)
+rm(No_Slice_Loc)
+rm(ToTest_df)
+rm(pred_value)
+
+
+#Working on the model
+sum(is.na(df1$SliceLocation))
+sum(is.na(df1$id))
+sum(is.na(df1$cancer))
+
+```
+
+
+
+```{r}
+
+
+NA_cancer_df <- subset(df1, is.na(df1$cancer))
+new_df1 <- subset(df1, !is.na(df1$cancer))
+
+test.data <- subset(NA_cancer_df, select = -c(id,image_id,cancer))
+train.data <- subset(new_df1, select = -c(id,image_id))
+
+rm(df1)
+rm(new_df1)
+rm(AllTrain_df)
+rm(stage1_labels)
+
+gc()
+
+```
+
+
+```{r}
+
+test.data_1 <- subset(ToTest_df1, select = -c(id,image_id))
+test_h2o_hex1 <- as.h2o(test.data_1)
+train_h2o_hex1 <- as.h2o(train.data)
+system.time(
+  dlearning.model_hex <- h2o.deeplearning(y = 1,
+                                          x=2:(ncol(train_h2o_hex1)-1),
+                                          training_frame = train_h2o_hex1,
+                                          nfolds=10,#10-fold cross-validation, 5-10 normally suffice
+                                          epoch = 500,
+                                          hidden=c(200,200,200), 
+                                          activation = "RectifierWithDropout",
+                                          seed = 5000,
+                                          adaptive_rate = TRUE, #chnage learning adaptively
+                                          rho = .1, #mometum, dampens the rate changes
+                                          #rate = .05, #learning rate, starting learning rate(higher=faster)
+                                          epsilon = .00001, #initial step
+                                          nesterov_accelerated_gradient = TRUE,
+                                          input_dropout_ratio = 0.2,  
+                                          hidden_dropout_ratios = c(0.5,0.5,0.5),       
+                                          stopping_tolerance=1e-2,         
+                                          stopping_rounds=2,
+                                          score_validation_samples=10000
+  )
+)
+
+
+
+
+```
+
+
+
+```{r}
+h2o.r2(dlearning.model_hex)
+h2o.performance(dlearning.model_hex)
+pred_value_hex1 <- predict(dlearning.model_hex, test_h2o_hex1)
+pred_value_df_hex1= as.data.frame(ifelse(pred_value_hex1 >= .5,1,0))
+#pred_value_df_hex1= as.data.frame(pred_value_hex1)
+
+
+id = as.data.frame(ToTest_df[,1])
+pred_value_df_hex1 = cbind(id, pred_value_df_hex1)
+colnames(pred_value_df_hex1) = c("id", "Survived")
+
+
+```
+
+
+```{r}
+write.csv(pred_value_df_hex1,"D://Data/S/3-h2odeeplearning_Model.csv.csv" )
+```
+
+
+## Resources
+
+[Deep Learning with H2O](https://www.r-bloggers.com/things-to-try-after-user-part-1-deep-learning-with-h2o/)
+[Package ‘h2o’](https://cran.r-project.org/web/packages/h2o/h2o.pdf)
+[h2o-tutorials](https://github.com/h2oai/h2o-tutorials/tree/master/tutorials/deeplearning)

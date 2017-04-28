@@ -1,0 +1,247 @@
+---
+title: "Model 1 - Data Science Bowl 2017"
+author: "Seema Rani Kanuri"
+date: "April 13, 2017"
+output: html_document
+---
+#Model : 1
+
+## Introduction : Data Science Bowl 2017
+We aspire to predict by Using a data set of thousands of high-resolution lung scans provided by the National Cancer Institute, participants will develop algorithms that accurately determine when lesions in the lungs are cancerous.
+
+### Goal:
+The Goal is to classify whether someone will be diagnosed with lung cancer at some point during the next year by using the  h2o.DeepLearning method
+
+### Task:
+We have to predict the lungs are cancerous.
+
+```{r setup, warning=F, results='hide'}
+set.seed(0) #  setting a seed will ensure reproducible results (not R's seed)
+rm(list=ls())
+gc()
+memory.size(max=T)')
+```
+
+## Introduction to the Data
+In this dataset, you are given over a thousand low-dose CT images from high-risk patients in DICOM format. Each image contains a series with multiple axial slices of the chest cavity. Each image has a variable number of 2D slices, which can vary based on the machine taking the scan and patient.
+
+The DICOM files have a header that contains the necessary information about the patient id, as well as scan parameters such as the slice thickness.
+
+### File descriptions:
+Each patient id has an associated directory of DICOM files. The patient id is found in the DICOM header and is identical to the patient name. The exact number of images will differ from case to case, varying according in the number of slices. Images were compressed as .7z files due to the large size of the dataset.
+
+```{r h2o-cluster, warning=F, echo=FALSE}
+
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite("BiocGenerics")
+
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite("EBImage")
+
+library(oro.dicom) 
+library(BiocGenerics) 
+library(EBImage)
+library("dplyr")
+library(reshape2)  #cbind
+library(stringr)  #do.call string
+library(data.table) #setname
+library(RPMG) #rescaling
+library("h2o")
+
+```
+
+###  The image data
+First, let's look at the sample images!
+Lets look at first row:
+
+id are of patients
+cancer (label to predict)
+
+The input folder has three things, one is the `sample_images folders` which has the sample CT Scans. The `stage1_labels.csv` contains the cancer ground truth for the stage 1 training set images and `stage1_sample_submission.csv` shows the submission format for stage 1.
+
+```{r}
+setwd="D:/Data/sample_images/" 
+fileList=dir("D:/Data/sample_images/", recursive=TRUE) 
+par(mai=c(.05,.05,.05,.05)) 
+par(mfrow=c(10,14))
+dcmobject <- readDICOMFile("D:/Data/sample_images/0de72529c30fe642bc60dcb75c87f6bd/e93a5752b08a4bbc3ec9aec8d7ddcc3f.dcm", debug=TRUE)
+#dcmobject$img[dcmobject$img == -2000] <- 0
+image(t(dcmobject$img), col=grey(0:64/64), axes=FALSE, xlab="", ylab="")
+```
+
+
+###  Resizing the image data
+
+The below code extract the image 'pixel' data from the images, as of now the file path is set to Sample_images
+
+
+To visualise the slices, we will have to plot them. matplotlib is used for plotting the slices. The plot_ct_scan function takes a 3D CT Scanned Image array as input and plots equally spaced slices. The CT Scans are grayscale images i.e. the value of each pixel is a single sample, which means it carries only intensity information.
+
+```{r pressure, echo=FALSE}
+
+sz=32  
+setwd="D:/Data/sample_images/" 
+fileList=dir("D:/Data/sample_images/", recursive=TRUE) 
+l=length(fileList) 
+z=array(dim=c(length(fileList),sz,sz)) 
+face=array(dim=c(length(fileList),sz*sz))
+
+par(mai=c(.05,.05,.05,.05)) 
+par(mfrow=c(10,14))
+
+
+for (i in 1:l){ 
+  a=paste("D:/Data/sample_images/", fileList[i],sep="") 
+  mydata=readDICOMFile(a)
+  y=resize(t(mydata$img),w=sz,h=sz) 
+  #image(y,col=gray(0:255/256), axes=FALSE, xlab="", ylab="") 
+  z[i,,]=imageData(y) 
+  face[i,]=imageData(y) 
+}
+
+```
+
+###  Extracting the header Data
+
+The below code extract the header data from the images, as of now the file path is set to Sample_images
+
+```{r}
+
+setwd("D:\\Data")
+sample_images <- readDICOM("sample_images",recursive = TRUE,verbose = TRUE)
+sample_images_table <- dicomTable(sample_images$hdr, stringsAsFactors = FALSE, collapse = "-", colSort = TRUE, verbose = FALSE, debug = FALSE)
+sample_images_table <- add_rownames(sample_images_table, "Path")
+id_type <- do.call(rbind, str_split(sample_images_table$Path, '/',3))
+sample_images_table <- cbind(id_type,sample_images_table)
+setnames(sample_images_table, "2", "id")
+setnames(sample_images_table, "1", "Root")
+setnames(sample_images_table, "3", "ImageID")
+
+#write.csv(modeldata, file="D.csv")
+sample_images_df <- subset(sample_images_table, select = c("ImageID","id", "0020-1041-SliceLocation"))
+df = cbind(sample_images_df,face)
+cancerPatients = read.csv("F:\\OneDrive - Texas Tech University\\MastersDocuments\\DS-Predictive Analytics\\Data Science Bowl 2017\\dataset\\stage1_labels.csv\\stage1_labels.csv")  # read csv file 
+modeldata <- merge(cancerPatients, df, by = "id", all.y = TRUE)
+modeldata[modeldata=="-2000"]<-0
+
+
+rm(sample_images_df)
+rm(id_type)
+rm(sample_images_table)
+rm(sample_images)
+rm(z)
+rm(face)
+rm(y)
+rm(a)
+rm(cancerPatients)
+rm(df)
+
+```
+
+
+## Initialization
+
+First, we will create three splits for train/test/valid independent data sets.We will train a data set on one set and use the others to test the validity of model by ensuring that it can predict accurately on data the model has not been shown.
+
+
+```{r}
+
+test.data <- modeldata[is.na(modeldata$cancer),]
+test.data <- subset(test.data, select = -c(id,cancer,ImageID))
+train.data <- modeldata[!is.na(modeldata$cancer),]
+train.data <- subset(train.data, select = -c(id,ImageID))
+
+```
+
+## Setting Up and Connecting to a H2O Cluster
+
+Let’s first load some packages
+
+```{r}
+# H2O is an R package
+library(h2o)
+
+# Create an H2O cloud 
+h20package<-h2o.init(
+  nthreads=-1,            #use available threads
+  max_mem_size = "16G")   # specify the memory size for the H2O cloud
+
+h2o.removeAll() ## clean slate - just in case the cluster was already running
+
+```
+
+
+
+## Run our predictive model, Training a h2o Deep Learning Model
+## Deep learning algorithm in h2o for prediction
+
+
+```{r}
+train_h2o <- as.h2o(train.data)
+test_h2o  <- as.h2o(test.data)
+#Set timer:
+timer <- proc.time()
+
+system.time(
+  dlearning.model_hex <- h2o.deeplearning(y = 1,
+                                          x=2:(ncol(train_h2o)-1),
+                                          training_frame = train_h2o,
+                                          nfolds=10,#10-fold cross-validation, 5-10 normally suffice
+                                          epoch = 500,
+                                          hidden=c(200,200,200), 
+                                          activation = "RectifierWithDropout",
+                                          seed = 5000,
+                                          adaptive_rate = TRUE, #chnage learning adaptively
+                                          rho = .1, #mometum, dampens the rate changes
+                                          #rate = .05, #learning rate, starting learning rate(higher=faster)
+                                          epsilon = .00001, #initial step
+                                          nesterov_accelerated_gradient = TRUE,
+                                          input_dropout_ratio = 0.2, # % of inputs dropout
+                                          hidden_dropout_ratios = c(0.5,0.5,0.5), # % for nodes dropout
+                                          stopping_tolerance=1e-2,        # stop when validation logloss does not improve by >=1% for 2 scoring events
+                                          stopping_rounds=2,
+                                          score_validation_samples=10000
+  )
+)
+
+
+```
+
+
+##  View information about the model.
+Keys to look for are validation performance and variable importance
+
+
+```{r}
+h2o.performance(mydeep)
+
+```
+
+## Using the model for prediction
+
+## Generate the submission.
+
+```{r}
+predict.dl2 <- as.data.frame(h2o.predict(mydeep, test_h2o))
+#create a data frame and writing submission file
+test1 <- test.data <- modeldata[is.na(modeldata$cancer),]
+sub_dlearning <- data.frame(User_ID = test1$id, Patient = test1$ImageID, cANCER = predict.dl2$predict)
+setwd("D:\\Data")
+write.csv(sub_dlearning, file = "1-sub_dlearning_Model.csv", row.names = F)
+```
+
+
+### All done, shutdown H2O    
+
+```{r}
+h2o.shutdown(prompt=FALSE)
+```
+
+
+## Resources
+
+[Deep Learning with H2O](https://www.r-bloggers.com/things-to-try-after-user-part-1-deep-learning-with-h2o/)
+[Package ‘h2o’](https://cran.r-project.org/web/packages/h2o/h2o.pdf)
+[h2o-tutorials](https://github.com/h2oai/h2o-tutorials/tree/master/tutorials/deeplearning)

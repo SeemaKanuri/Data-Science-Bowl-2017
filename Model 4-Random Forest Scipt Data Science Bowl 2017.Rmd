@@ -1,0 +1,217 @@
+---
+title: "Model 4  Random Forest Scipt Data Science Bowl 2017"
+author: "Seema Rani Kanuri"
+date: "April 16, 2017"
+output: html_document
+---
+
+#Model : 4 with Random Forest
+
+## Introduction : Data Science Bowl 2017
+We aspire to predict by Using a data set of thousands of high-resolution lung scans provided by the National Cancer Institute, participants will develop algorithms that accurately determine when lesions in the lungs are cancerous.
+
+### Goal:
+The Goal is to classify whether someone will be diagnosed with lung cancer at some point during the next year by using the  h2o.DeepLearning method
+
+### Task:
+We have to predict the lungs are cancerous.
+
+### Task:
+We have to predict the lungs are cancerous.
+
+```{r setup, warning=F, results='hide'}
+set.seed(0) #  setting a seed will ensure reproducible results (not R's seed)
+rm(list=ls())
+gc()
+memory.size(max=T)')
+```
+
+## Introduction to the Data
+In this dataset, you are given over a thousand low-dose CT images from high-risk patients in DICOM format. Each image contains a series with multiple axial slices of the chest cavity. Each image has a variable number of 2D slices, which can vary based on the machine taking the scan and patient.
+
+The DICOM files have a header that contains the necessary information about the patient id, as well as scan parameters such as the slice thickness.
+
+### File descriptions:
+Each patient id has an associated directory of DICOM files. The patient id is found in the DICOM header and is identical to the patient name. The exact number of images will differ from case to case, varying according in the number of slices. Images were compressed as .7z files due to the large size of the dataset.
+
+```{r h2o-cluster, warning=F, echo=FALSE}
+
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite("BiocGenerics")
+
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite("EBImage")
+
+library(oro.dicom) 
+library(BiocGenerics) 
+library(EBImage)
+library("dplyr")
+library(reshape2)  #cbind
+library(stringr)  #do.call string
+library(data.table) #setname
+library(RPMG) #rescaling
+```
+
+###  The image data
+First, let's look at the sample images!
+Lets look at 25 rows:
+
+id are of patients
+cancer (label to predict)
+
+The input folder has three things, one is the `sample_images folders` which has the sample CT Scans. The `stage1_labels.csv` contains the cancer ground truth for the stage 1 training set images and `stage1_sample_submission.csv` shows the submission format for stage 1.
+
+
+###  Resizing the image data
+
+To visualise the slices, we will have to plot them. matplotlib is used for plotting the slices. The plot_ct_scan function takes a 3D CT Scanned Image array as input and plots equally spaced slices. The CT Scans are grayscale images i.e. the value of each pixel is a single sample, which means it carries only intensity information.
+
+```{r}
+
+Patient_1 <- read.csv("D:/Data/S/Patients_1.csv")
+Patient_2 <- read.csv("D:/Data/S/Patients_2.csv")
+Patient_3 <- read.csv("D:/Data/S/Patients_3.csv")
+Patient_4 <- read.csv("D:/Data/S/Patients_4.csv")
+
+PTOtest200 <- read.csv("D:/Data/S/PTOtest200.csv")
+PTOtest201 <- read.csv("D:/Data/S/PTOtest201.csv")
+
+stage1_labels <- read.csv("D:/Data/S/stage1_labels.csv")
+
+```
+
+
+
+```{r}
+Patient_1 <- subset( Patient_1, select = -X )
+Patient_2 <- subset( Patient_2, select = -X )
+Patient_3 <- subset( Patient_3, select = -X )
+Patient_4 <- subset( Patient_4, select = -X )
+
+PTOtest200 <- subset( PTOtest200, select = -X )
+PTOtest201 <- subset( PTOtest201, select = -X )
+
+Table_Df <- merge(Patient_1, Patient_2, all = TRUE)
+ToTrain_df<- merge(Table_Df, Patient_3, all = TRUE)
+AllTrain_df <- merge(ToTrain_df, Patient_4, all = TRUE)
+ToTest_df <- merge(PTOtest200, PTOtest201, all = TRUE)
+train.data <- subset( train.data, select = -X )
+
+rm(Patient_1)
+rm(Patient_2)
+rm(Patient_3)
+rm(Patient_4)
+rm(Table_Df)
+rm(ToTrain_df)
+rm(PTOtest201)
+rm(PTOtest200)
+
+```
+
+
+
+```{r}
+setnames(ToTest_df, "PatientID", "id")
+setnames(AllTrain_df, "PatientID", "id")
+
+setwd("D:\\Data\\S")
+df1 <- merge(stage1_labels, AllTrain_df, by = "id", all.y = TRUE)
+
+sum(is.na(df1$cancer))
+sum(is.na(df1$SliceLocation))
+sum(is.na(ToTest_df$SliceLocation))
+sum(is.na(ToTest_df$id))
+sum(is.na(ToTest_df$image_id))
+
+df1[df1== "-2000"]<- 0
+ToTest_df[ToTest_df== "-2000"]<- 0
+
+```
+
+
+```{r}
+#dftest1 <- merge(stage1_labels, PTOtest200, by = "id", all.y = TRUE)
+NA_df_agg <- subset(df1, is.na(df1$cancer))
+new_df1_agg <- subset(df1, !is.na(df1$cancer))
+
+max =tail(levels(new_df1$SliceLocation))
+min = head(levels(new_df1$SliceLocation))
+new_df1$SliceLocation = round(RESCALE(new_df1$SliceLocation, 1, 100, -420, 877.3))
+new_df1_agg <- aggregate(new_df1, by=list(new_df1$id, new_df1$SliceLocation), FUN=mean, na.rm=TRUE)
+#2048 , 2000, 1024, 1000
+new_df1_agg[new_df1_agg== "-2000"]<- 0
+new_df1_agg[new_df1_agg== "-2048"]<- 0
+new_df1_agg[new_df1_agg== "-1024"]<- 0
+new_df1_agg[new_df1_agg== "-1000"]<- 0
+new_df1$SliceLocation <- as.factor(new_df1$SliceLocation)
+
+NA_df$SliceLocation = round(RESCALE(NA_df$SliceLocation, 1, 100, -420, 877.3))
+NA_df_agg <- aggregate(NA_df, by=list(NA_df$id, NA_df$SliceLocation), FUN=mean, na.rm=TRUE)
+NA_df_agg[NA_df_agg== "-2000"]<- 0
+```
+
+
+```{r}
+#test.data <- subset(NA_df_agg, select = -c(id,image_id,Group.2,Group.1, cancer))
+#train.data <- subset(new_df1_agg, select = -c(id,image_id,Group.2,Group.1))
+test.data <- subset(NA_df_agg, select = -c(id,image_id,cancer))
+train.data <- subset(new_df1_agg, select = -c(id,image_id))
+```
+
+
+## Setting Up and Connecting to a H2O Cluster
+
+Let’s first load some packages
+
+```{r}
+# H2O is an R package
+library(h2o)
+
+# Create an H2O cloud 
+h20package<-h2o.init(
+  nthreads=-1,            #use available threads
+  max_mem_size = "16G")   # specify the memory size for the H2O cloud
+
+h2o.removeAll() ## clean slate - just in case the cluster was already running
+
+```
+
+
+```{r}
+
+system.time(
+dlearning.model <- h2o.randomForest(
+                                  x=c(2:1026),
+                                  y=1,
+                                  training_frame = train_h2o,
+                                  ntrees = 600,
+                                  max_depth = 25,
+                                  sample_rate = 0.95
+                                  )
+)
+
+```
+
+```{r}
+
+
+pred_value <- predict(dlearning.model, test_h2o)
+pred_value_df= as.data.frame(ifelse(pred_value >= .5,1,0))
+h2o.r2(dlearning.model)
+h2o.performance(dlearning.model)
+```
+
+
+```{r}
+
+id = as.data.frame(NA_df_agg[,1])
+pred_value_df = cbind(id, pred_value_df)
+colnames(pred_value_df) = c("id", "Survived")
+#write.csv(pred_value_df, "D://Data/S/4-h2oRandomForest_Model.csv", row.names=F)
+write.csv(compare,"D://Data/S/3.csv" )
+```
+
+
+
